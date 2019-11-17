@@ -16,6 +16,11 @@ See the [examples](examples) folder for more details.
 
 TODO: Describe `Modbus`
 
+### References
+
+* Modbus protocol 1.1b
+* SimplyModbus(https://www.simplymodbus.ca/index.html)
+
 ## Contributing
 
 If you want to contribute, then feel free to describe new devices in the devices section
