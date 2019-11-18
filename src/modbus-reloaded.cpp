@@ -24,12 +24,13 @@
 /**
  * Constructor with TX/RX enable pins
  */
-Modbus::Modbus(uint16_t txEnablePin,
+Modbus::Modbus(USARTSerial &serial, uint16_t txEnablePin,
                uint16_t rxEnablePin,
                bool txActiveHigh = true,
                bool rxActiveHigh = true,
                bool sleepAble = true)
 {
+    _serial = &serial;
     _txEnablePin = txEnablePin;
     _rxEnablePin = rxEnablePin;
     _txActiveHigh = txActiveHigh;
@@ -40,8 +41,9 @@ Modbus::Modbus(uint16_t txEnablePin,
 /**
  * Constructor with TX/RX enable pin combined
  */
-Modbus::Modbus(uint16_t txRxPin, bool txWhenHigh = true)
+Modbus::Modbus(USARTSerial &serial, uint16_t txRxPin, bool txWhenHigh = true)
 {
+    _serial = &serial;
     _txEnablePin = txRxPin;
     _rxEnablePin = txRxPin; // same pin
     _txActiveHigh = txWhenHigh;
@@ -52,20 +54,31 @@ Modbus::Modbus(uint16_t txRxPin, bool txWhenHigh = true)
 /*
  * Initialize class
  */
-void Modbus::begin()
+void Modbus::begin(uint16_t speed, unsigned long config)
 {
     // initialize hardware
+    _serial->begin(speed, config);
+    _characterDurationUS = 10*1000000/speed; // in microseconds (considering 10bits/char)
     Serial.println("called begin");
+    _state = MODBUS_READY;
 }
 
-/**
- * Main loop
+/*
+ * Set response timeout in ms
  * 
- * This loop should be called in the main loop of your application
+ * @parameter unsigned long timeoutMS
  */
-void Modbus::loop()
-{
-    // do something useful
+void Modbus::setResponseTimeout(unsigned long timeoutMS) {
+    _maxWaitForResponse = timeoutMS;
+}
+
+/*
+ * Set transmit timeout in ms
+ * 
+ * @parameter unsigned long timeoutMS
+ */
+void Modbus::setTransmitTimeout(unsigned long timeoutMS) {
+    _maxWaitToTransmitMS = timeoutMS;
 }
 
 /*
@@ -169,28 +182,32 @@ ModbusStatus Modbus::send() {
 
     unsigned long maxInterval = (50 * 1000000UL / _speed); //50 bit late at most
 
-    // wait to write
+    // wait to write (ms)
     while (!_serial->availableForWrite() && millis()-timestamp < MAX_WAIT_TO_WRITE_MS)
         ;
     if (millis()-timestamp >= MAX_WAIT_TO_WRITE_MS) {
-        return MODBUS_WRITE_TIMEOUT;
+        return (_status = MODBUS_WRITE_TIMEOUT);
     }
+
+    // use microsec inbetween chars
     timestamp = micros();
 
     for (int i = 0; i < _txLength; i++)
     {
         crc = crc16(crc, _txBuffer[i]);
-        while (!_serial->availableForWrite() && micros()-timestamp < maxInterval)
+        // allow a delay up to 5 chars
+        while (!_serial->availableForWrite() && micros()-timestamp <  5 * _characterDurationUS)
             ;
         if (!_serial->availableForWrite()) {
-            return MODBUS_WRITE_TIMEOUT;
+            return (_status = MODBUS_WRITE_TIMEOUT);
         }
         _serial->write(_txBuffer[i]);
         timestamp = micros();
     }
     _serial->write(high(crc));
     _serial->write(low(crc));
-    return MODBUS_SUCCESS;
+    _timestamp = millis();
+    return (_status = MODBUS_SUCCESS);
 }
 
 /*
@@ -208,26 +225,30 @@ ModbusStatus Modbus::checkResponse()
     {
         _rxBuffer[_rxLength++] = _serial->read();
     }
+
+    if (_rxLength < 2 && millis()-_timestamp < _maxWaitForResponseMS) {
+        // we need at least the slave ID and function code to start decoding
+        return (_status = MODBUS_RECEIVING);
+    }
+    if (millis()-_timestamp >= _maxWaitForResponseMS) {
+        return (_status = MODBUS_TIMEOUT); 
+    }
+
     uint16_t crc = 0xffff;
     for (int i=0; i< _rxLength; i++) {
         crc = crc16(crc, _rxBuffer[i]);
     }
 
-    if (_rxLength < 2) {
-        // we need at least the slave ID and function code to start decoding
-        return MODBUS_RECEIVING;
-    }
-
     if (_rxBuffer[0] != _slaveID) {
         // wrong slave response
         _errorCode = _kMBInvalidSlaveID;
-        return MODBUS_ERROR;
+        return (_status = MODBUS_ERROR);
     }
 
     if (_rxBuffer[1]>=0x80) {
         // error code
         _errorCode = _rxBuffer[2];
-        return MODBUS_ERROR;
+        return (_status = MODBUS_ERROR);
     }
     switch (_rxBuffer[1]) {
     case _kMBReadCoils:
@@ -256,12 +277,12 @@ ModbusStatus Modbus::checkResponse()
         length = 10; 
         break;
     default:
-        return MODBUS_UNHANDLED_FUNCTION;
+        return (_status = MODBUS_UNHANDLED_FUNCTION);
     }
 
     if (_rxLength < count) // slaveid + function + count + response bytes + crc16
     {
-        return MODBUS_RECEIVING;
+        return (_status = MODBUS_RECEIVING);
     }
 
     // decode bytes
@@ -271,85 +292,133 @@ ModbusStatus Modbus::checkResponse()
         for (int i= 0; i<byteCount; i++) {
             _buffer[i] = _rxBuffer[i+3];
         }
-        return MODBUS_DATA_READY;
+        return (_status = MODBUS_DATA_READY);
         break;
     case _kMBReadHoldingRegisters:
     case _kMBReadInputRegisters:
         for (int i= 0; i<byteCount/2; i++) {
             _buffer[i] = word(_rxBuffer[2*i+3],_rxBuffer[2*i+4]);
         }
-        return MODBUS_DATA_READY;
+        return (_status = MODBUS_DATA_READY);
         break;
     case _kMBWriteSingleCoil:
     case _kMBWriteSingleRegister:
         if (_rxBuffer[2] != _txBuffer[2] || _rxBuffer[3] != _txBuffer[3]) {
             _errorCode = MODBUS_WRONG_ADDRESS;
-            return MODBUS_ERROR;
+            return (_status = MODBUS_ERROR);
         }
         if (_rxBuffer[4] != _txBuffer[4] || _rxBuffer[5] != _txBuffer[5]) {
             _errorCode = MODBUS_WRONG_VALUE;
-            return MODBUS_ERROR;
+            return (_status = MODBUS_ERROR);
         }
         return MODBUS_READY;
         break;
     case _kMBMaskWriteRegister:
         if (_rxBuffer[2] != _txBuffer[2] || _rxBuffer[3] != _txBuffer[3]) {
             _errorCode = MODBUS_WRONG_ADDRESS;
-            return MODBUS_ERROR;
+            return (_status = MODBUS_ERROR);
         }
         if (_rxBuffer[4] != _txBuffer[4] || _rxBuffer[5] != _txBuffer[5] || 
         _rxBuffer[6] != _txBuffer[4] || _rxBuffer[5] != _txBuffer[7]) {
             _errorCode = MODBUS_WRONG_MASK;
-            return MODBUS_ERROR;
+            return (_status = MODBUS_ERROR);
         }
-        return MODBUS_READY;
+        return (_status = MODBUS_READY);
         break;
     case _kMBWriteMultipleCoils:
     case _kMBWriteMultipleRegisters:
         if (_rxBuffer[2] != _txBuffer[2] || _rxBuffer[3] != _txBuffer[3]) {
             _errorCode = MODBUS_WRONG_ADDRESS;
-            return MODBUS_ERROR;
+            return (_status = MODBUS_ERROR);
         }
         if (_rxBuffer[4] != _txBuffer[4] || _rxBuffer[5] != _txBuffer[5]) {
             _errorCode = MODBUS_WRONG_QUANTITY;
-            return MODBUS_ERROR;
+            return (_status = MODBUS_ERROR);
         }
-        return MODBUS_READY;
+        return (_status = MODBUS_READY);
         break;
     case _kMBReadWriteMultipleRegisters:
         if (_rxBuffer[2] != _txBuffer[10]) {
             _errorCode = MODBUS_WRONG_BYTE_COUNT;
-            return MODBUS_ERROR;
+            return (_status = MODBUS_ERROR);
         }
         for (int i= 0; i<byteCount/2; i++) {
             _buffer[i] = word(_rxBuffer[2*i+3],_rxBuffer[2*i+4]);
         }
-        return MODBUS_DATA_READY;
+        return (_status = MODBUS_DATA_READY);
         break;
     }
 
-    return MODBUS_DATA_READY;
+    return (_status = MODBUS_DATA_READY);
 }
 
+/*
+ * write into buffer for transmission
+ */
+void Modbus::clrBuffer(void) {
+    for (int i=0; i<_length; i++) {
+        _buffer[_length] = 0;
+    }
+}
+
+/*
+ * write into buffer for transmission
+ */
 void Modbus::writeBuffer(uint8_t index, uint16_t value) {
     _buffer[index] = value;
+    _length = index+1;
 }
 
+/*
+ * append data to buffer for transmission
+ */
 void Modbus::appendBuffer(uint16_t value) {
-    writeBuffer(_index++, value);
+    writeBuffer(_length++, value);
 }
 
+/*
+ * copy data to buffer for transmission
+ */
 void ModBus::copyBuffer(uint16_t *source, uint16_t length) {
     memcpy((void *)_buffer, (void *)source, length * 2);
+    _length = length;
 }
 
+/*
+ * write bit into buffer for transmission
+ */
 void ModBus::writeBitBuffer(uint16_t index, bool bit) {
     if (bit) {
         _buffer[index / 16] |= 1 << (index % 16);
     } else {
         _buffer[index / 16] &= ~(1 << (index % 16));
     }
+    _length = index / 16;
 }
+
+/*
+ * get length words from offset in _rxBuffer
+ * 
+ * @parameter uint16_t * buffer
+ * @parameter uint16_t offset
+ * @parameter uint16_t number of words to retrieve
+ * 
+ * @return number of words retrieved
+ */
+uint16_r Modbus::getBuffer(uint16_t *buffer, uint16_t offset, uint16_t length) {
+    if (offset > _length || offset + length > _length) {
+        return 0;
+    }
+    int i;
+    for (i=0; i < length && i + offset < _length; i++) {
+        buffer[i] = _rxBuffer[i + offset];
+    }
+    return i;
+}
+
+/*
+ * write bit into buffer for transmission
+ */
 
 /**
  *  * Modbus function 0x01 Read Coils.
@@ -377,7 +446,7 @@ void ModBus::writeBitBuffer(uint16_t index, bool bit) {
 ModbusStatus ModbusMaster::readCoils(uint16_t address, uint16_t quantity)
 {
     if (quantity<1 || quantity>2000) {
-        return MODBUS_BAD_QUANTITY;
+        return (_status = MODBUS_BAD_QUANTITY);
     }
     _address = address;
     _quantity = quantity;
@@ -410,7 +479,7 @@ ModbusStatus ModbusMaster::readDiscreteInputs(uint16_t address,
                                               uint16_t quantity)
 {
     if (quantity<1 || quantity>2000) {
-        return MODBUS_BAD_QUANTITY;
+        return (_status = MODBUS_BAD_QUANTITY);
     }
     _address = address;
     _quantity = quantity;
@@ -436,7 +505,7 @@ ModbusStatus ModbusMaster::readHoldingRegisters(uint16_t address,
                                                 uint16_t quantity)
 {
     if (quantity<1 || quantity>125) {
-        return MODBUS_BAD_QUANTITY;
+        return (_status = MODBUS_BAD_QUANTITY);
     }
     _address = address;
     _quantity = quantity;
@@ -462,7 +531,7 @@ ModbusStatus ModbusMaster::readInputRegisters(uint16_t address,
                                               uint8_t quantity)
 {
     if (quantity<1 || quantity>125) {
-        return MODBUS_BAD_QUANTITY;
+        return (_status = MODBUS_BAD_QUANTITY);
     }
     _address = address;
     _quantity = quantity;
@@ -526,7 +595,7 @@ ModbusStatus ModbusMaster::writeMultipleCoils(uint16_t address,
                                               uint16_t quantity)
 {
         if (quantity<1 || quantity>0x7b0) {
-        return MODBUS_BAD_QUANTITY;
+        return (_status = MODBUS_BAD_QUANTITY);
     }
     _address = address;
     _quantity = quantity;
@@ -550,7 +619,7 @@ ModbusStatus ModbusMaster::writeMultipleRegisters(uint16_t address,
                                                   uint16_t quantity)
 {
     if (quantity<1 || quantity>123) {
-        return MODBUS_BAD_QUANTITY;
+        return (_status = MODBUS_BAD_QUANTITY);
     }
     _address = address;
     _quantity = quantity;
@@ -612,7 +681,7 @@ ModbusStatus ModbusMaster::readWriteMultipleRegisters(uint16_t readAddress,
                                                       uint16_t writeAddress, uint16_t writeQuantity)
 {
     if (readQuantity<1 || readQuantity>0x7d || writeQuantity<1 || writeQuantity>0x79) {
-        return MODBUS_BAD_QUANTITY;
+        return (_status = MODBUS_BAD_QUANTITY);
     }
     _address = readAddress;
     _quantity = readQuantity;
@@ -621,6 +690,9 @@ ModbusStatus ModbusMaster::readWriteMultipleRegisters(uint16_t readAddress,
     return send(_kMBReadWriteMultipleRegisters);
 }
 
+/*
+ * calculate crc 16
+ */
 static uint16_t Modbus::crc16(uint16_t crc, uint8_t value)
 {
     int i;
@@ -636,3 +708,7 @@ static uint16_t Modbus::crc16(uint16_t crc, uint8_t value)
 
     return crc;
 }
+
+/*
+ *
+ */

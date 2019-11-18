@@ -29,7 +29,8 @@
  */
 
 #define MB_MAX_DATA_LENGTH 80
-#define MAX_WAIT_TO_WRITE_MS 10000
+#define MAX_WAIT_TO_TRANSMIT_MS 10000 // we should be able to write within 10ms
+#define MAX_WAIT_FOR_RESPONSE_MS 20000 // we should get something within 20ms
 
 /*
  * Helpers
@@ -75,7 +76,7 @@ public:
   Modbus(USARTSerial &serial, uint16_t txEnablePin, uint16_t rxEnablePin, bool txActiveHigh, bool rxActiveHigh, bool sleepAble);
   Modbus(USARTSerial &serial, uint16_t txRxPin, bool txWhenHigh = true);
 
-  void begin();
+  void begin(uint16_t speed, );
   void loop();
 
   uint16_t getResponseBuffer(uint8_t);
@@ -95,19 +96,16 @@ public:
   uint8_t available(void);
   uint16_t receive(void);
 
-  uint8_t readCoils(uint16_t, uint16_t);
-  uint8_t readDiscreteInputs(uint16_t, uint16_t);
-  uint8_t readHoldingRegisters(uint16_t, uint16_t);
-  uint8_t readInputRegisters(uint16_t, uint8_t);
-  uint8_t writeSingleCoil(uint16_t, uint8_t);
-  uint8_t writeSingleRegister(uint16_t, uint16_t);
-  uint8_t writeMultipleCoils(uint16_t, uint16_t);
-  uint8_t writeMultipleCoils();
-  uint8_t writeMultipleRegisters(uint16_t, uint16_t);
-  uint8_t writeMultipleRegisters();
-  uint8_t maskWriteRegister(uint16_t, uint16_t, uint16_t);
-  uint8_t readWriteMultipleRegisters(uint16_t, uint16_t, uint16_t, uint16_t);
-  uint8_t readWriteMultipleRegisters(uint16_t, uint16_t);
+  uint8_t readCoils(uint16_t address, uint16_t quantity);
+  uint8_t readDiscreteInputs(uint16_t address, uint16_t quantity);
+  uint8_t readHoldingRegisters(uint16_t address, uint16_t quantity);
+  uint8_t readInputRegisters(uint16_t address, uint8_t quantity);
+  uint8_t writeSingleCoil(uint16_t address, uint8_t value);
+  uint8_t writeSingleRegister(uint16_t address, uint16_t value);
+  uint8_t writeMultipleCoils(uint16_t address, uint16_t quantity);
+  uint8_t writeMultipleRegisters(uint16_t address, uint16_t quantity);
+  uint8_t maskWriteRegister(uint16_t address, uint16_t andMask, uint16_t orMask);
+  uint8_t readWriteMultipleRegisters(uint16_t readAddress, uint16_t readQuantity, uint16_t writeAddress, uint16_t writeQuantity);
 
 private:
   // methods
@@ -122,10 +120,12 @@ private:
   uint16_t _slaveID = 1;
   uint32_t _speed = 9600;
   uint16_t _timeout = 500;
+  
+  ModbusStatus _status = MODBUS_UNKNOWN;
 
   USARTSerial *_serial;
   static uint16_t _buffer[MB_MAX_DATA_LENGTH];
-  uint8_t _index = 0;
+  uint8_t _length = 0;
   uint8_t *_txBuffer;
   uint8_t _txIndex = 0;
   uint16_t _txLength = 0;
@@ -133,12 +133,17 @@ private:
   uint8_t _rxIndex = 0;
   uint16_t _rxLength = 0;
   uint8_t _errorCode = 0;
+  unsigned long _timestamp = 0;
 
   uint8_t _function;
   uint16_t _address;
   uint16_t _quantity;
   uint16_t _address2;
   uint16_t _quantity2;
+
+  unsigned long _maxWaitToTransmitMS = MAX_WAIT_TO_TRANSMIT_MS;
+  unsigned long _maxWaitForResponseMS = MAX_WAIT_FOR_RESPONSE_MS;
+  unsigned long _characterDurationUS = 1050; // default for 9600, 10 bits - adjusted in begin()
 };
 
 #endif
