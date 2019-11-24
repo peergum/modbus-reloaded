@@ -1,6 +1,6 @@
 // Example usage for modbus-reloaded library by peergum.
 
-#include "modbus-reloaded.h"
+#include "src/modbus-reloaded.h"
 
 // include if using Serial2/4/5
 // #include "Serial2/Serial2.h"
@@ -23,16 +23,18 @@
 // Initialize objects from the lib
 Modbus modbus(SERIAL, TX_ENABLE_PIN, TX_ACTIVE_HIGH, RX_ENABLE_PIN, RX_ACTIVE_HIGH, SLEEP_ABLE);
 
+Sensor sensor(modbus);
+
 void setup() {
-    modbus.begin(SPEED,PARITY);
+    sensor.begin(SPEED,PARITY);
     delay(1000);
 
     // send request to read 1 register
-    modbus.readHoldingRegisters(REGISTER_TO_READ, 1);
+    sensor.readHoldingRegisters(REGISTER_TO_READ, 1);
 }
 
 void loop() {
-    ModbusStatus status = modbus.checkResponse();
+    ModbusStatus status = sensor.checkResponse();
     if (status == DATA_READY) {
     } else if ( status == MODBUS_ERROR) {
         // didn't work: do something about it

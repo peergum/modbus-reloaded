@@ -24,6 +24,8 @@
 #ifndef __MODBUS_RELOADED_H
 #define __MODBUS_RELOADED_H
 
+#include "PortSelector.h"
+
 /*
  * Some constants that may need adjusting
  */
@@ -40,19 +42,18 @@
 #define LOW(value) (value & 0xff)
 #define WORD(high, low) (uint16_t)(high * 256 + low)
 
-enum
-{
+enum  ModbusStatus {
   MODBUS_UNKNOWN,
   MODBUS_BUSY,
   MODBUS_READY,
   MODBUS_SENDING,
-  MODBUS_DATA_SENT
+  MODBUS_DATA_SENT,
   MODBUS_RECEIVING,
   MODBUS_DATA_READY,
   MODBUS_ERROR
-} ModbusStatus;
+};
 
-enum {
+enum ModbusError {
   MODBUS_SUCCESS,
   MODBUS_ILLEGAL_FUNCTION,
   MODBUS_ILLEGAL_DATA_ADDRESS,
@@ -65,18 +66,19 @@ enum {
   MODBUS_WRONG_ADDRESS,
   MODBUS_WRONG_VALUE,
   MODBUS_WRONG_QUANTITY,
-  MODBUS_UNHANDLED_FUNCTION
+  MODBUS_UNHANDLED_FUNCTION,
   MODBUS_WRONG_BYTE_COUNT,
-} ModbusError;
+};
 
 // This is your main class that users will import into their application
-class Modbus
+class Modbus: protected PortSelector
 {
 public:
-  Modbus(USARTSerial &serial, uint16_t txEnablePin, uint16_t rxEnablePin, bool txActiveHigh, bool rxActiveHigh, bool sleepAble);
-  Modbus(USARTSerial &serial, uint16_t txRxPin, bool txWhenHigh = true);
+  Modbus(USARTSerial &serial, uint16_t txEnablePin, uint16_t rxEnablePin, bool txActiveHigh, bool rxActiveHigh, bool sleepAble, PortSelector *portSelector = NULL, uint8_t address = 0);
+  Modbus(USARTSerial &serial, uint16_t txRxPin, bool txWhenHigh = true, PortSelector *portSelector = NULL, uint8_t address = 0);
+  Modbus(Modbus &modbus);
 
-  void begin(uint16_t speed, );
+  void begin(uint16_t speed, unsigned long parity);
   void loop();
 
   uint16_t getResponseBuffer(uint8_t);
@@ -94,7 +96,8 @@ public:
   void send(uint16_t);
   void send(uint32_t);
   uint8_t available(void);
-  uint16_t receive(void);
+  uint16_t checkResponse(void);
+  uint16_t getBuffer(uint16_t *buffer, uint16_t offset, uint16_t length);
 
   uint8_t readCoils(uint16_t address, uint16_t quantity);
   uint8_t readDiscreteInputs(uint16_t address, uint16_t quantity);
@@ -106,6 +109,9 @@ public:
   uint8_t writeMultipleRegisters(uint16_t address, uint16_t quantity);
   uint8_t maskWriteRegister(uint16_t address, uint16_t andMask, uint16_t orMask);
   uint8_t readWriteMultipleRegisters(uint16_t readAddress, uint16_t readQuantity, uint16_t writeAddress, uint16_t writeQuantity);
+
+protected:
+  uint8_t _address = 0; // address on port selector
 
 private:
   // methods
@@ -124,6 +130,7 @@ private:
   ModbusStatus _status = MODBUS_UNKNOWN;
 
   USARTSerial *_serial;
+  PortSelector _portSelector;
   static uint16_t _buffer[MB_MAX_DATA_LENGTH];
   uint8_t _length = 0;
   uint8_t *_txBuffer;

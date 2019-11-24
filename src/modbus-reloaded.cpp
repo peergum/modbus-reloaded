@@ -26,9 +26,11 @@
  */
 Modbus::Modbus(USARTSerial &serial, uint16_t txEnablePin,
                uint16_t rxEnablePin,
-               bool txActiveHigh = true,
-               bool rxActiveHigh = true,
-               bool sleepAble = true)
+               bool txActiveHigh,
+               bool rxActiveHigh,
+               bool sleepAble,
+               PortSelector *portSelector,
+               uint8_t address): _portSelector(portSelector), _address(address)
 {
     _serial = &serial;
     _txEnablePin = txEnablePin;
@@ -41,7 +43,11 @@ Modbus::Modbus(USARTSerial &serial, uint16_t txEnablePin,
 /**
  * Constructor with TX/RX enable pin combined
  */
-Modbus::Modbus(USARTSerial &serial, uint16_t txRxPin, bool txWhenHigh = true)
+Modbus::Modbus(USARTSerial &serial,
+    uint16_t txRxPin,
+    bool txWhenHigh,
+    PortSelector *portSelector,
+    uint8_t address): _portSelector(portSelector), _address(address)
 {
     _serial = &serial;
     _txEnablePin = txRxPin;
@@ -51,12 +57,20 @@ Modbus::Modbus(USARTSerial &serial, uint16_t txRxPin, bool txWhenHigh = true)
     _sleepAble = false;
 }
 
+Modbus::Modbus(Modbus &modbus) {
+
+}
+
 /*
  * Initialize class
  */
 void Modbus::begin(uint16_t speed, unsigned long config)
 {
     // initialize hardware
+    if (!_portSelector) {
+        _portSelector = new PortSelector(0); // define a useless port selector to simplify
+    }
+    _portSelector->begin();
     _serial->begin(speed, config);
     _characterDurationUS = 10*1000000/speed; // in microseconds (considering 10bits/char)
     Serial.println("called begin");
@@ -182,6 +196,8 @@ ModbusStatus Modbus::send() {
 
     unsigned long maxInterval = (50 * 1000000UL / _speed); //50 bit late at most
 
+    _portSelector->selectPort(_address);
+
     // wait to write (ms)
     while (!_serial->availableForWrite() && millis()-timestamp < MAX_WAIT_TO_WRITE_MS)
         ;
@@ -221,6 +237,9 @@ ModbusStatus Modbus::checkResponse()
 {
     uint8_t length;
     uint8_t byteCount;
+
+    _portSelector->selectPort(_address);
+    
     while (_serial->available() > 0)
     {
         _rxBuffer[_rxLength++] = _serial->read();
