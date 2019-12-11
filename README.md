@@ -1,4 +1,4 @@
-# modbus-reloaded
+# modbus-reloaded [![Codacy Badge](https://api.codacy.com/project/badge/Grade/25e94f3325c14f309e801d49ebf6ac08)](https://www.codacy.com/manual/peergum/modbus-reloaded?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=peergum/modbus-reloaded&amp;utm_campaign=Badge_Grade)
 
 A expandable Particle library for modbus communication
 
